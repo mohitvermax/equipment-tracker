@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Search, AlertCircle, ExternalLink, Calendar, MapPin, FileText, Camera, Loader2 ,ImageIcon } from 'lucide-react';
+import React, { useState } from 'react';
+import { Search, AlertCircle, ExternalLink, Calendar, MapPin, FileText, Loader2, Image } from 'lucide-react';
 
 const EquipmentTracker = () => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -14,26 +14,33 @@ const EquipmentTracker = () => {
     setError(null);
     
     try {
-      // For demo: using mock data
-      // In production:
-       const response = await fetch(`http://localhost:3001/api/search?query=${query}&region=IN`);
-      const data = await response.json();
-      console.log(data)
+      const response = await fetch(`http://localhost:3001/api/search?query=${encodeURIComponent(query)}&region=IN`);
       
-     
-     
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('API Response:', data);
       setSearchResults(data);
     } catch (err) {
-      setError('Failed to fetch equipment data. Please try again.');
+      console.error('Search error:', err);
+      setError(`Failed to fetch equipment data: ${err.message}. Make sure the backend is running on port 3001.`);
     } finally {
       setLoading(false);
     }
   };
 
   const handleSearch = (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
     if (searchQuery.trim()) {
       searchEquipment(searchQuery);
+    }
+  };
+
+  const handleKeyPress = (e) => {
+    if (e.key === 'Enter') {
+      handleSearch();
     }
   };
 
@@ -73,8 +80,8 @@ const EquipmentTracker = () => {
             </p>
           </div>
 
-          {/* Search Bar */}
-          <div onSubmit={handleSearch} className="max-w-3xl mx-auto">
+          {/* Search Bar - Fixed */}
+          <div className="max-w-3xl mx-auto">
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                 <Search className="w-5 h-5 text-slate-400" />
@@ -83,20 +90,20 @@ const EquipmentTracker = () => {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyPress={handleKeyPress}
                 placeholder="Search equipment (e.g., BrahMos, F-35, Patriot)..."
                 className="w-full pl-12 pr-32 py-4 bg-slate-800/50 backdrop-blur-lg border border-slate-600 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
               <div className="absolute inset-y-0 right-0 flex items-center gap-2 pr-2">
                 <button
-                  type="button"
                   onClick={handleImageSearch}
                   className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
                   title="Search by image"
                 >
-                  <ImageIcon className="w-5 h-5" />
+                  <Image className="w-5 h-5" />
                 </button>
                 <button
-                  type="submit"
+                  onClick={handleSearch}
                   className="px-6 py-2 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-lg font-medium hover:from-blue-700 hover:to-cyan-700 transition-all"
                 >
                   Search
@@ -148,37 +155,43 @@ const EquipmentTracker = () => {
           {/* Equipment Header */}
           <div className="bg-slate-800/50 backdrop-blur-lg border border-slate-700 rounded-xl p-6 mb-6">
             <div className="flex items-start justify-between mb-4">
-              <div>
+              <div className="flex-1">
                 <h2 className="text-3xl font-bold text-white mb-2">
-                  {searchResults.equipment.fullName}
+                  {searchResults.equipment?.fullName || searchResults.equipment?.name || 'Equipment'}
                 </h2>
-                <div className="flex items-center gap-4 text-sm">
-                  <span className="px-3 py-1 bg-blue-500/20 text-blue-300 rounded-full">
-                    {searchResults.equipment.type}
-                  </span>
-                  <span className="text-slate-400 flex items-center gap-1">
-                    <MapPin className="w-4 h-4" />
-                    {searchResults.equipment.origin}
-                  </span>
-                  <span className="px-3 py-1 bg-green-500/20 text-green-300 rounded-full">
-                    {searchResults.equipment.status}
-                  </span>
+                <div className="flex items-center gap-4 text-sm flex-wrap">
+                  {searchResults.equipment?.type && (
+                    <span className="px-3 py-1 bg-blue-500/20 text-blue-300 rounded-full">
+                      {searchResults.equipment.type}
+                    </span>
+                  )}
+                  {searchResults.equipment?.origin && (
+                    <span className="text-slate-400 flex items-center gap-1">
+                      <MapPin className="w-4 h-4" />
+                      {searchResults.equipment.origin}
+                    </span>
+                  )}
+                  {searchResults.equipment?.status && (
+                    <span className="px-3 py-1 bg-green-500/20 text-green-300 rounded-full">
+                      {searchResults.equipment.status}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
             <p className="text-slate-300 leading-relaxed">
-              {searchResults.equipment.description}
+              {searchResults.equipment?.description || 'No description available'}
             </p>
           </div>
 
           {/* Tabs */}
           <div className="bg-slate-800/30 backdrop-blur-lg border border-slate-700 rounded-xl overflow-hidden mb-6">
-            <div className="flex border-b border-slate-700">
+            <div className="flex border-b border-slate-700 overflow-x-auto">
               {['overview', 'specifications', 'news', 'articles'].map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className={`flex-1 px-6 py-4 text-sm font-medium transition-colors ${
+                  className={`flex-1 px-6 py-4 text-sm font-medium transition-colors whitespace-nowrap ${
                     activeTab === tab
                       ? 'bg-slate-700 text-white border-b-2 border-blue-500'
                       : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
@@ -195,92 +208,137 @@ const EquipmentTracker = () => {
                 <div className="grid md:grid-cols-2 gap-6">
                   <div>
                     <h3 className="text-lg font-semibold text-white mb-4">Gallery</h3>
-                    <div className="grid grid-cols-2 gap-3">
-                      {searchResults.equipment.images.map((img, idx) => (
-                        <div key={idx} className="aspect-video bg-slate-900 rounded-lg overflow-hidden">
-                          <img src={img} alt={`Equipment ${idx + 1}`} className="w-full h-full object-cover" />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-6">
-                      <h3 className="text-lg font-semibold text-white mb-3">Operators</h3>
-                      <div className="flex flex-wrap gap-2">
-                        {searchResults.operators.map((op, idx) => (
-                          <span key={idx} className="px-3 py-1 bg-slate-700 text-slate-300 rounded-lg text-sm">
-                            {op}
-                          </span>
+                    {searchResults.equipment?.images?.length > 0 ? (
+                      <div className="grid grid-cols-2 gap-3">
+                        {searchResults.equipment.images.map((img, idx) => (
+                          <div key={idx} className="aspect-video bg-slate-900 rounded-lg overflow-hidden">
+                            <img src={img} alt={`Equipment ${idx + 1}`} className="w-full h-full object-cover" />
+                          </div>
                         ))}
                       </div>
+                    ) : (
+                      <p className="text-slate-400">No images available</p>
+                    )}
+                    
+                    <div className="mt-6">
+                      <h3 className="text-lg font-semibold text-white mb-3">Operators</h3>
+                      {searchResults.equipment?.operators?.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {searchResults.equipment.operators.map((op, idx) => (
+                            <span key={idx} className="px-3 py-1 bg-slate-700 text-slate-300 rounded-lg text-sm">
+                              {op}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-400">No operator information available</p>
+                      )}
                     </div>
                   </div>
                   <div>
                     <h3 className="text-lg font-semibold text-white mb-4">Variants</h3>
-                    <div className="space-y-2">
-                      {searchResults.variants.map((variant, idx) => (
-                        <div key={idx} className="bg-slate-900/50 rounded-lg p-3 text-slate-300">
-                          {variant}
-                        </div>
-                      ))}
-                    </div>
+                    {searchResults.equipment?.variants?.length > 0 ? (
+                      <div className="space-y-2">
+                        {searchResults.equipment.variants.map((variant, idx) => (
+                          <div key={idx} className="bg-slate-900/50 rounded-lg p-3 text-slate-300">
+                            {variant}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400">No variant information available</p>
+                    )}
                   </div>
                 </div>
               )}
 
               {/* Specifications Tab */}
               {activeTab === 'specifications' && (
-                <div className="grid md:grid-cols-2 gap-4">
-                  {Object.entries(searchResults.equipment.specifications).map(([key, value]) => (
-                    <div key={key} className="bg-slate-900/50 rounded-lg p-4">
-                      <div className="text-sm text-slate-400 mb-1">
-                        {key.charAt(0).toUpperCase() + key.slice(1)}
-                      </div>
-                      <div className="text-lg font-semibold text-white">{value}</div>
+                <div>
+                  {searchResults.equipment?.specifications && Object.keys(searchResults.equipment.specifications).length > 0 ? (
+                    <div className="grid md:grid-cols-2 gap-4">
+                      {Object.entries(searchResults.equipment.specifications).map(([key, value]) => (
+                        <div key={key} className="bg-slate-900/50 rounded-lg p-4">
+                          <div className="text-sm text-slate-400 mb-1">
+                            {key.charAt(0).toUpperCase() + key.slice(1)}
+                          </div>
+                          <div className="text-lg font-semibold text-white">{value}</div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  ) : (
+                    <p className="text-slate-400">No specifications available</p>
+                  )}
                 </div>
               )}
 
               {/* News Tab */}
               {activeTab === 'news' && (
-                <div className="space-y-4">
-                  {searchResults.news.map((item, idx) => (
-                    <div key={idx} className="bg-slate-900/50 rounded-lg p-5 hover:bg-slate-900/70 transition-colors">
-                      <div className="flex items-start justify-between mb-2">
-                        <h4 className="text-lg font-semibold text-white flex-1">{item.title}</h4>
-                        <ExternalLink className="w-5 h-5 text-slate-400 ml-3 flex-shrink-0" />
-                      </div>
-                      <p className="text-slate-300 mb-3">{item.excerpt}</p>
-                      <div className="flex items-center gap-4 text-sm text-slate-400">
-                        <span>{item.source}</span>
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-4 h-4" />
-                          {item.date}
-                        </span>
-                      </div>
+                <div>
+                  {searchResults.news && searchResults.news.length > 0 ? (
+                    <div className="space-y-4">
+                      {searchResults.news.map((item, idx) => (
+                        <a
+                          key={idx}
+                          href={item.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block bg-slate-900/50 rounded-lg p-5 hover:bg-slate-900/70 transition-colors"
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <h4 className="text-lg font-semibold text-white flex-1">{item.title}</h4>
+                            <ExternalLink className="w-5 h-5 text-slate-400 ml-3 flex-shrink-0" />
+                          </div>
+                          <p className="text-slate-300 mb-3">{item.excerpt}</p>
+                          <div className="flex items-center gap-4 text-sm text-slate-400 flex-wrap">
+                            <span>{item.source}</span>
+                            <span className="flex items-center gap-1">
+                              <Calendar className="w-4 h-4" />
+                              {item.date}
+                            </span>
+                          </div>
+                        </a>
+                      ))}
                     </div>
-                  ))}
+                  ) : (
+                    <p className="text-slate-400">No news articles available</p>
+                  )}
                 </div>
               )}
 
               {/* Articles Tab */}
               {activeTab === 'articles' && (
-                <div className="space-y-4">
-                  {searchResults.articles.map((item, idx) => (
-                    <div key={idx} className="bg-slate-900/50 rounded-lg p-5 hover:bg-slate-900/70 transition-colors">
-                      <div className="flex items-start justify-between mb-2">
-                        <h4 className="text-lg font-semibold text-white flex-1">{item.title}</h4>
-                        <FileText className="w-5 h-5 text-slate-400 ml-3 flex-shrink-0" />
-                      </div>
-                      <div className="flex items-center gap-4 text-sm text-slate-400">
-                        <span className="px-2 py-1 bg-slate-800 rounded">{item.type}</span>
-                        <span>{item.source}</span>
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-4 h-4" />
-                          {item.date}
-                        </span>
-                      </div>
+                <div>
+                  {searchResults.articles && searchResults.articles.length > 0 ? (
+                    <div className="space-y-4">
+                      {searchResults.articles.map((item, idx) => (
+                        <a
+                          key={idx}
+                          href={item.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block bg-slate-900/50 rounded-lg p-5 hover:bg-slate-900/70 transition-colors"
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <h4 className="text-lg font-semibold text-white flex-1">{item.title}</h4>
+                            <FileText className="w-5 h-5 text-slate-400 ml-3 flex-shrink-0" />
+                          </div>
+                          <div className="flex items-center gap-4 text-sm text-slate-400 flex-wrap">
+                            {item.type && <span className="px-2 py-1 bg-slate-800 rounded">{item.type}</span>}
+                            <span>{item.source}</span>
+                            {item.date && (
+                              <span className="flex items-center gap-1">
+                                <Calendar className="w-4 h-4" />
+                                {item.date}
+                              </span>
+                            )}
+                          </div>
+                        </a>
+                      ))}
                     </div>
-                  ))}
+                  ) : (
+                    <p className="text-slate-400">No research articles available</p>
+                  )}
                 </div>
               )}
             </div>
