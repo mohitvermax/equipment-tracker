@@ -102,3 +102,5 @@ dump.rdb
 *.tmp
 *.temp
 .scratch/
+
+reports/
