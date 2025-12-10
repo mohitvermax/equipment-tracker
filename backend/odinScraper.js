@@ -8,13 +8,268 @@ const cheerio = require('cheerio');
 async function initBrowser() {
   return await puppeteer.launch({
     headless: false,
-  defaultViewport: null,  // optional: opens full window
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-blink-features=AutomationControlled'
-  ]
+    defaultViewport: null,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled'
+    ]
   });
+}
+
+/**
+ * Close the initial disclaimer modal
+ */
+async function closeDisclaimerModal(page) {
+  try {
+    console.log('Checking for disclaimer modal...');
+    
+    // Wait for the disclaimer modal to appear
+    await page.waitForSelector('.disclaimer-modal', { timeout: 5000 });
+    console.log('Found disclaimer modal');
+    
+    // Wait a bit for the modal to fully render
+    await new Promise(res => setTimeout(res, 1000));
+    
+    // Try multiple strategies to close the modal
+    
+    // Strategy 1: Click the button-area > button
+    try {
+      const buttonInArea = await page.$('.disclaimer-modal .button-area button');
+      if (buttonInArea) {
+        console.log('Clicking button in button-area...');
+        await buttonInArea.click();
+        await new Promise(res => setTimeout(res, 1500));
+        return true;
+      }
+    } catch (e) {
+      console.log('Strategy 1 failed:', e.message);
+    }
+    
+    // Strategy 2: Click button with specific ID (from your screenshot)
+    try {
+      const buttonById = await page.$('button[id*="1765538738334"]');
+      if (buttonById) {
+        console.log('Clicking button by ID...');
+        await buttonById.click();
+        await new Promise(res => setTimeout(res, 1500));
+        return true;
+      }
+    } catch (e) {
+      console.log('Strategy 2 failed:', e.message);
+    }
+    
+    // Strategy 3: Click any button with class containing 'disclaimer-button'
+    try {
+      const disclaimerButton = await page.$('.disclaimer-modal button.btn.disclaimer-button');
+      if (disclaimerButton) {
+        console.log('Clicking disclaimer button...');
+        await disclaimerButton.click();
+        await new Promise(res => setTimeout(res, 1500));
+        return true;
+      }
+    } catch (e) {
+      console.log('Strategy 3 failed:', e.message);
+    }
+    
+    // Strategy 4: Click CONFIRM button (visible text)
+    try {
+      await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('.disclaimer-modal button'));
+        const confirmButton = buttons.find(btn => btn.textContent.trim() === 'CONFIRM');
+        if (confirmButton) confirmButton.click();
+      });
+      console.log('Clicked CONFIRM button via text search');
+      await new Promise(res => setTimeout(res, 1500));
+      return true;
+    } catch (e) {
+      console.log('Strategy 4 failed:', e.message);
+    }
+    
+  } catch (error) {
+    console.log('No disclaimer modal found or already dismissed:', error.message);
+  }
+  
+  return false;
+}
+
+/**
+ * Extract content from all tabs in the modal
+ */
+async function extractTabsContent(page) {
+  try {
+    console.log('Extracting tabs content...');
+    
+    // Find all tab buttons/links
+    const tabButtons = await page.$$('.nav-tabs a, .tabs a, [role="tab"]');
+    console.log(`Found ${tabButtons.length} tabs`);
+    
+    const tabsData = {};
+    
+    for (let i = 0; i < tabButtons.length; i++) {
+      try {
+        // Get the tab name before clicking
+        const tabName = await page.evaluate(el => {
+          return el.textContent?.trim() || el.getAttribute('href') || `tab-${i}`;
+        }, tabButtons[i]);
+        
+        console.log(`Clicking tab: ${tabName}`);
+        
+        // Click the tab
+        await tabButtons[i].click();
+        await new Promise(res => setTimeout(res, 1500)); // Wait for content to load
+        
+        // Extract content from the active tab
+        const tabContent = await page.evaluate(() => {
+          const activeTab = document.querySelector('.tab-pane.active, [role="tabpanel"].active, .tab-content > .active');
+          if (!activeTab) return '';
+          
+          // Get all text content, preserving structure
+          const sections = {};
+          
+          // Try to extract structured data
+          activeTab.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(heading => {
+            const headingText = heading.textContent.trim();
+            let content = '';
+            let nextElement = heading.nextElementSibling;
+            
+            while (nextElement && !nextElement.matches('h1, h2, h3, h4, h5, h6')) {
+              content += nextElement.textContent.trim() + '\n';
+              nextElement = nextElement.nextElementSibling;
+            }
+            
+            if (headingText && content) {
+              sections[headingText] = content.trim();
+            }
+          });
+          
+          // If no structured data, get all text
+          if (Object.keys(sections).length === 0) {
+            return activeTab.textContent.trim();
+          }
+          
+          return sections;
+        });
+        
+        if (tabContent && (typeof tabContent === 'string' ? tabContent.length > 0 : Object.keys(tabContent).length > 0)) {
+          tabsData[tabName] = tabContent;
+        }
+        
+      } catch (error) {
+        console.error(`Error processing tab ${i}:`, error.message);
+      }
+    }
+    
+    return tabsData;
+  } catch (error) {
+    console.error('Error extracting tabs:', error.message);
+    return {};
+  }
+}
+
+/**
+ * Extract detailed data from the modal
+ */
+async function extractModalData(page) {
+  try {
+    // Wait for modal to be visible and loaded
+    await page.waitForSelector('.modal-content, .modal-body', { timeout: 5000 });
+    await new Promise(res => setTimeout(res, 1500));
+    
+    // Extract all tabs content by clicking through them
+    const tabsData = await extractTabsContent(page);
+    
+    // Extract the main modal data
+    const modalData = await page.evaluate(() => {
+      const modal = document.querySelector('.modal');
+      if (!modal) return null;
+      
+      // Extract title
+      const title = modal.querySelector('.modal-title, h1, h2, h3')?.textContent?.trim() || '';
+      
+      // Extract image from asset-image or any image div
+      const imageDiv = modal.querySelector('.asset-image, .modal-image, .image-section');
+      const imageUrl = imageDiv?.querySelector('img')?.src || '';
+      
+      // Extract all text content sections
+      const sections = {};
+      
+      // Get notes section
+      const notesDiv = modal.querySelector('.notes');
+      if (notesDiv) {
+        sections.notes = notesDiv.textContent?.trim() || '';
+      }
+      
+      // Get details element
+      const detailsElements = modal.querySelectorAll('.details');
+      detailsElements.forEach((detail, idx) => {
+        const detailTitle = detail.querySelector('.title')?.textContent?.trim() || `detail-${idx}`;
+        const detailContent = detail.querySelector('.content, p')?.textContent?.trim() || '';
+        if (detailContent) {
+          sections[detailTitle] = detailContent;
+        }
+      });
+      
+      // Extract description if present
+      const description = modal.querySelector('.description, .modal-description')?.textContent?.trim() || '';
+      if (description) {
+        sections.description = description;
+      }
+      
+      // Extract all tables
+      const tables = {};
+      modal.querySelectorAll('table').forEach((table, idx) => {
+        const tableData = [];
+        table.querySelectorAll('tr').forEach(row => {
+          const cells = Array.from(row.querySelectorAll('td, th'));
+          if (cells.length > 0) {
+            tableData.push(cells.map(cell => cell.textContent.trim()));
+          }
+        });
+        if (tableData.length > 0) {
+          tables[`table-${idx}`] = tableData;
+        }
+      });
+      
+      // Extract specification rows
+      const specifications = {};
+      modal.querySelectorAll('.spec-row, .specification-row, .property-row').forEach(row => {
+        const label = row.querySelector('.spec-label, .label, dt, th')?.textContent?.trim();
+        const value = row.querySelector('.spec-value, .value, dd, td')?.textContent?.trim();
+        if (label && value) {
+          specifications[label] = value;
+        }
+      });
+      
+      // Extract all paragraphs
+      const paragraphs = [];
+      modal.querySelectorAll('p').forEach(p => {
+        const text = p.textContent?.trim();
+        if (text && text.length > 10) {
+          paragraphs.push(text);
+        }
+      });
+      
+      return {
+        title,
+        imageUrl,
+        sections,
+        tables,
+        specifications,
+        paragraphs
+      };
+    });
+    
+    // Combine modal data with tabs data
+    return {
+      ...modalData,
+      tabs: tabsData
+    };
+    
+  } catch (error) {
+    console.error('Error extracting modal data:', error.message);
+    return null;
+  }
 }
 
 /**
@@ -36,47 +291,17 @@ async function searchODINWithModal(query) {
     // Navigate to search page
     await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    // Wait a bit for any popups to appear
-    // await page.waitForTimeout(2000);
+    // Wait a bit for page to settle
     await new Promise(res => setTimeout(res, 2000));
 
-
-    // Handle cookie/alert popups
-    try {
-      // Try to find and click any popup accept buttons
-      const popupSelectors = [
-        'button.cookie-alert button',
-        'button[class*="accept"]',
-        'button[class*="ok"]',
-        'button[class*="agree"]',
-        '.modal button.btn',
-        '[data-dismiss="modal"]'
-      ];
-
-      for (const selector of popupSelectors) {
-        try {
-          const button = await page.$(selector);
-          if (button) {
-            console.log('Found popup button:', selector);
-            await button.click();
-            // await page.waitForTimeout(1000);
-            await new Promise(res => setTimeout(res, 1000));
-
-            break;
-          }
-        } catch (e) {
-          // Continue to next selector
-        }
-      }
-    } catch (error) {
-      console.log('No popup found or already dismissed');
-    }
+    // Close the disclaimer modal
+    await closeDisclaimerModal(page);
 
     // Wait for search results to load
-    await page.waitForSelector('.weg-search-results, .search-results', { timeout: 10000 });
+    await page.waitForSelector('.weg-search-results, .search-results, .asset-card, .weg-card', { timeout: 10000 });
 
     // Get all equipment cards
-    const cards = await page.$$('.weg-card, .asset-card');
+    const cards = await page.$$('.weg-card, .asset-card, [class*="card"]');
     console.log(`Found ${cards.length} equipment cards`);
 
     const results = [];
@@ -86,114 +311,64 @@ async function searchODINWithModal(query) {
       try {
         const card = cards[i];
 
-        // Get card button/link
-        const cardButton = await card.$('button, a, .card-link');
-        if (!cardButton) continue;
-
         // Extract preview data from card
         const cardData = await page.evaluate((el) => {
           return {
-            title: el.querySelector('.asset-title, h3, .title')?.textContent?.trim() || '',
-            type: el.querySelector('.asset-type, .type')?.textContent?.trim() || '',
+            title: el.querySelector('.asset-title, h3, .title, .card-title')?.textContent?.trim() || '',
+            type: el.querySelector('.asset-type, .type, .category')?.textContent?.trim() || '',
             preview: el.querySelector('.description, .preview, p')?.textContent?.trim() || '',
             imageUrl: el.querySelector('img')?.src || ''
           };
         }, card);
 
-        console.log(`Processing card ${i + 1}: ${cardData.title}`);
+        console.log(`\n=== Processing card ${i + 1}: ${cardData.title} ===`);
 
-        // Click the card to open modal
-        await cardButton.click();
-        // await page.waitForTimeout(2000);
-        await new Promise(res => setTimeout(res, 2000));
-
-        // Wait for modal to appear
-        // await page.waitForSelector('.modal.asset-detail-modal, .modal-overlay', { timeout: 5000 });
+        // Find clickable element in card
+        const clickableElement = await card.$('button, a, .card-link, [class*="clickable"]');
+        if (!clickableElement) {
+          console.log('No clickable element found, trying to click card itself');
+          await card.click();
+        } else {
+          await clickableElement.click();
+        }
+        
+        // Wait for modal to open
+        await new Promise(res => setTimeout(res, 2500));
 
         // Extract detailed data from modal
-        const modalData = await page.evaluate(() => {
-          const modal = document.querySelector('.modal.asset-detail-modal, .modal');
-          if (!modal) return null;
-
-          // Extract image from left div
-          const leftDiv = modal.querySelector('.left, .modal-left, .image-section');
-          const imageUrl = leftDiv?.querySelector('img')?.src || '';
-
-          // Extract content from right div
-          const rightDiv = modal.querySelector('.right, .modal-right, .content-section');
-          
-          // Get notes section
-          const notesDiv = modal.querySelector('.notes, [class*="notes"]');
-          const notes = notesDiv?.textContent?.trim() || '';
-
-          // Get details from details element
-          const detailsElement = modal.querySelector('.details.element, .details');
-          const detailsContent = detailsElement?.querySelector('.content, p')?.textContent?.trim() || '';
-
-          // Extract tabs content
-          const tabs = {};
-          const tabElements = modal.querySelectorAll('.asset-tabs .tab-pane, [role="tabpanel"]');
-          tabElements.forEach((tab) => {
-            const tabName = tab.getAttribute('id') || tab.className;
-            const tabContent = tab.textContent?.trim() || '';
-            if (tabContent) {
-              tabs[tabName] = tabContent;
-            }
-          });
-
-          // Extract system data
-          const systemData = {};
-          modal.querySelectorAll('.spec-row, .specification-row, tr').forEach((row) => {
-            const label = row.querySelector('.spec-label, dt, th, .label')?.textContent?.trim();
-            const value = row.querySelector('.spec-value, dd, td, .value')?.textContent?.trim();
-            if (label && value) {
-              systemData[label] = value;
-            }
-          });
-
-          // Extract from table-like structures
-          modal.querySelectorAll('table tr').forEach((row) => {
-            const cells = row.querySelectorAll('td, th');
-            if (cells.length >= 2) {
-              const key = cells[0].textContent?.trim();
-              const val = cells[1].textContent?.trim();
-              if (key && val) {
-                systemData[key] = val;
-              }
-            }
-          });
-
-          return {
-            imageUrl,
-            notes,
-            detailsContent,
-            tabs,
-            systemData
-          };
-        });
+        const modalData = await extractModalData(page);
+        
+        if (!modalData) {
+          console.log('Failed to extract modal data');
+        } else {
+          console.log('Successfully extracted modal data');
+          console.log('Tabs found:', Object.keys(modalData.tabs || {}));
+        }
 
         // Close modal
         try {
-          const closeButton = await page.$('.modal button[data-dismiss="modal"], .modal .close, .modal-close');
+          const closeButton = await page.$('.modal button[data-dismiss="modal"], .modal .close, .modal-close, button.close, [aria-label="Close"]');
           if (closeButton) {
+            console.log('Closing modal with button');
             await closeButton.click();
-            // await page.waitForTimeout(1000);
             await new Promise(res => setTimeout(res, 1000));
-
+          } else {
+            console.log('No close button found, pressing Escape');
+            await page.keyboard.press('Escape');
+            await new Promise(res => setTimeout(res, 1000));
           }
         } catch (e) {
-          // Try pressing Escape
+          console.log('Error closing modal:', e.message);
           await page.keyboard.press('Escape');
-        //   await page.waitForTimeout(1000);
-        await new Promise(res => setTimeout(res, 1000));
-
+          await new Promise(res => setTimeout(res, 1000));
         }
 
         // Combine card preview with modal details
         results.push({
           ...cardData,
           ...modalData,
-          url: searchUrl
+          url: searchUrl,
+          cardIndex: i + 1
         });
 
       } catch (error) {
@@ -201,9 +376,7 @@ async function searchODINWithModal(query) {
         // Try to close modal and continue
         try {
           await page.keyboard.press('Escape');
-        //   await page.waitForTimeout(500);
-          await new Promise(res => setTimeout(res, 5000));
-
+          await new Promise(res => setTimeout(res, 1000));
         } catch (e) {}
       }
     }
@@ -221,7 +394,7 @@ async function searchODINWithModal(query) {
 }
 
 /**
- * Parse and structure equipment data
+ * Parse and structure equipment data for report generation
  */
 function parseEquipmentData(rawData) {
   if (!rawData || rawData.length === 0) {
@@ -230,34 +403,45 @@ function parseEquipmentData(rawData) {
 
   const primary = rawData[0];
 
+  // Combine all text sections for description
+  const descriptionParts = [];
+  if (primary.sections?.notes) descriptionParts.push(primary.sections.notes);
+  if (primary.sections?.description) descriptionParts.push(primary.sections.description);
+  primary.paragraphs?.forEach(p => descriptionParts.push(p));
+  
+  const description = descriptionParts.join('\n\n') || primary.preview || 'No description available';
+
   return {
     name: primary.title,
     fullName: primary.title,
     type: primary.type || 'Military Equipment',
-    description: primary.notes || primary.detailsContent || primary.preview || 'No description available',
+    description: description,
     
-    // Specifications from systemData
-    specifications: primary.systemData || {},
+    // Specifications
+    specifications: primary.specifications || {},
+    
+    // Tables data
+    tables: primary.tables || {},
+    
+    // All sections extracted
+    sections: primary.sections || {},
     
     // Images
-    images: [primary.imageUrl, ...rawData.slice(1, 4).map(r => r.imageUrl)].filter(Boolean),
+    images: [
+      primary.imageUrl,
+      ...rawData.slice(1, 4).map(r => r.imageUrl)
+    ].filter(Boolean),
     
-    // Notes for report
-    notes: primary.notes || primary.detailsContent || '',
+    // Tabs content
+    tabs: primary.tabs || {},
     
-    // Detailed content from tabs
-    intelligence: {
-      system: primary.tabs?.system || primary.tabs?.System || '',
-      dimensions: primary.tabs?.dimensions || primary.tabs?.Dimensions || '',
-      payload: primary.tabs?.payload || primary.tabs?.Payload || '',
-      propulsion: primary.tabs?.propulsion || primary.tabs?.['Propulsion Characteristics'] || '',
-      fireControl: primary.tabs?.['fire-control'] || primary.tabs?.['Fire Control'] || '',
-    },
+    // Intelligence data
+    intelligence: extractIntelligence(primary),
     
-    // Variants (extracted from notes or description)
+    // Variants
     variants: extractVariants(primary),
     
-    // Operators (extracted from notes or description)
+    // Operators
     operators: extractOperators(primary),
     
     // All raw data for reference
@@ -266,25 +450,47 @@ function parseEquipmentData(rawData) {
 }
 
 /**
+ * Extract intelligence from tabs and sections
+ */
+function extractIntelligence(data) {
+  const intelligence = {};
+  
+  if (data.tabs) {
+    Object.keys(data.tabs).forEach(tabName => {
+      const normalizedName = tabName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+      intelligence[normalizedName] = data.tabs[tabName];
+    });
+  }
+  
+  if (data.sections) {
+    Object.keys(data.sections).forEach(sectionName => {
+      const normalizedName = sectionName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+      intelligence[normalizedName] = data.sections[sectionName];
+    });
+  }
+  
+  return intelligence;
+}
+
+/**
  * Extract variants from text
  */
 function extractVariants(data) {
   const variants = [];
-  const text = `${data.notes} ${data.detailsContent}`.toLowerCase();
+  const allText = JSON.stringify(data).toLowerCase();
   
-  // Look for variant mentions
   const variantPatterns = [
-    /variant[s]?:?\s*([^.]+)/gi,
-    /version[s]?:?\s*([^.]+)/gi,
-    /model[s]?:?\s*([^.]+)/gi,
-    /type[s]?:?\s*([^.]+)/gi
+    /variant[s]?:?\s*([^.\n]+)/gi,
+    /version[s]?:?\s*([^.\n]+)/gi,
+    /model[s]?:?\s*([^.\n]+)/gi,
+    /type[s]?:?\s*([^.\n]+)/gi
   ];
 
   variantPatterns.forEach(pattern => {
-    const matches = text.matchAll(pattern);
+    const matches = allText.matchAll(pattern);
     for (const match of matches) {
       const variant = match[1].trim();
-      if (variant.length < 100 && !variants.includes(variant)) {
+      if (variant.length < 100 && variant.length > 3 && !variants.includes(variant)) {
         variants.push(variant);
       }
     }
@@ -298,18 +504,18 @@ function extractVariants(data) {
  */
 function extractOperators(data) {
   const operators = new Set();
-  const text = `${data.notes} ${data.detailsContent}`;
+  const allText = JSON.stringify(data);
   
-  // Common country/operator names
   const countries = [
     'United States', 'USA', 'US', 'India', 'Russia', 'China', 'UK', 'United Kingdom',
     'France', 'Germany', 'Israel', 'Japan', 'South Korea', 'Pakistan', 'Iran',
-    'Saudi Arabia', 'UAE', 'Turkey', 'Australia', 'Canada'
+    'Saudi Arabia', 'UAE', 'Turkey', 'Australia', 'Canada', 'Brazil', 'Egypt',
+    'Italy', 'Spain', 'Poland', 'Ukraine', 'North Korea', 'Syria', 'Iraq'
   ];
 
   countries.forEach(country => {
     const regex = new RegExp(`\\b${country}\\b`, 'gi');
-    if (regex.test(text)) {
+    if (regex.test(allText)) {
       operators.add(country);
     }
   });
@@ -322,10 +528,17 @@ function extractOperators(data) {
  */
 async function searchODIN(query) {
   try {
+    console.log(`\n========================================`);
     console.log(`Searching ODIN for: ${query}`);
+    console.log(`========================================\n`);
     
     const rawResults = await searchODINWithModal(query);
     const structuredData = parseEquipmentData(rawResults);
+    
+    console.log(`\n========================================`);
+    console.log(`Search completed successfully`);
+    console.log(`Found ${rawResults.length} results`);
+    console.log(`========================================\n`);
     
     return {
       success: true,
@@ -358,6 +571,7 @@ searchODIN('BrahMos').then(result => {
   console.log('Equipment:', result.equipment);
   console.log('Specifications:', result.equipment.specifications);
   console.log('Intelligence:', result.equipment.intelligence);
-  console.log('Notes:', result.equipment.notes);
+  console.log('Tabs:', result.equipment.tabs);
+  console.log('Sections:', result.equipment.sections);
 });
 */
