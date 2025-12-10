@@ -1,4 +1,4 @@
-// server.js - Updated with enhanced ODIN scraping
+// server.js - Fixed to work with new odinScraper
 const express = require('express');
 const cors = require('cors');
 const NodeCache = require('node-cache');
@@ -11,8 +11,7 @@ const {
 } = require('./googleNewsHelper');
 
 const {
-  searchODIN,
-  parseEquipmentData
+  searchODIN
 } = require('./odinScraper');
 
 const app = express();
@@ -41,12 +40,14 @@ app.get('/api/search', async (req, res) => {
       return res.json(cached);
     }
 
-    console.log(`New search request: ${query}`);
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`NEW SEARCH REQUEST: ${query}`);
+    console.log(`${'='.repeat(60)}\n`);
 
-    // Search ODIN with modal handling (this takes longer)
-    const odinResult = await searchODIN(query);
+    // Search ODIN with new scraper
+    const odinResult = await searchODIN(query, { downloadPath: './downloads' });
     
-    // Fetch news in parallel while ODIN loads
+    // Fetch news in parallel
     const newsPromise = fetchEquipmentNews(query, region, 15);
     const globalNewsPromise = fetchEquipmentNews(query, 'US', 10);
     
@@ -70,59 +71,133 @@ app.get('/api/search', async (req, res) => {
     // Sort by date
     uniqueNews.sort((a, b) => b.timestamp - a.timestamp);
 
-    // Prepare response
-    const result = {
-      query,
-      equipment: odinResult.success && odinResult.equipment ? {
-        name: odinResult.equipment.name,
-        fullName: odinResult.equipment.fullName,
-        type: odinResult.equipment.type,
-        description: odinResult.equipment.description,
-        specifications: odinResult.equipment.specifications,
-        images: odinResult.equipment.images,
-        notes: odinResult.equipment.notes,
-        intelligence: odinResult.equipment.intelligence,
-        status: 'Active' // You can extract this from notes
-      } : {
-        name: query,
-        fullName: query,
-        type: 'Military Equipment',
-        description: 'No detailed information available',
-        specifications: {},
-        images: [],
-        notes: '',
-        intelligence: {},
-        status: 'Unknown'
-      },
+    // Prepare response using new data structure
+    let result;
+    
+    if (odinResult.success && odinResult.frontendData) {
+      const frontendData = odinResult.frontendData;
+      const militaryReport = odinResult.militaryReport;
       
-      // Variants and operators from ODIN
-      variants: odinResult.success && odinResult.equipment ? 
-        odinResult.equipment.variants : [],
+      result = {
+        query,
+        
+        // Equipment overview for home page
+        equipment: {
+          name: frontendData.overview.name,
+          fullName: frontendData.overview.name,
+          type: frontendData.overview.type,
+          description: militaryReport.intelligenceNotes || 'Military equipment system',
+          status: militaryReport.executiveSummary.operationalStatus,
+          threatLevel: militaryReport.executiveSummary.threatLevel,
+          primaryRole: frontendData.overview.primaryRole,
+          image: frontendData.overview.image,
+          
+          // Specifications for Specifications tab
+          specifications: frontendData.specificationsTab,
+          
+          // Intelligence data for Intelligence tab
+          intelligence: {
+            operationalStatus: frontendData.intelligenceTab.operationalStatus,
+            operators: frontendData.intelligenceTab.operators,
+            variants: frontendData.intelligenceTab.variants,
+            deploymentRegions: frontendData.intelligenceTab.deploymentRegions,
+            operationalRange: frontendData.intelligenceTab.operationalRange
+          },
+          
+          // Combat capabilities for Capabilities tab
+          capabilities: {
+            primaryRole: frontendData.capabilitiesTab.primaryRole,
+            targetTypes: frontendData.capabilitiesTab.targetTypes,
+            guidanceSystem: frontendData.capabilitiesTab.guidanceSystem,
+            warheadType: frontendData.capabilitiesTab.warheadType
+          },
+          
+          // Strategic assessment for Assessment tab
+          assessment: {
+            strengths: frontendData.assessmentTab.strengths,
+            limitations: frontendData.assessmentTab.limitations,
+            counterMeasures: frontendData.assessmentTab.counterMeasures
+          },
+          
+          // Notes for Notes tab
+          notes: frontendData.notesTab.intelligenceNotes,
+          lastUpdated: frontendData.notesTab.lastUpdated
+        },
+        
+        // Images
+        images: frontendData.images || [],
+        
+        // Variants and operators
+        variants: frontendData.intelligenceTab.variants || [],
+        operators: frontendData.intelligenceTab.operators || [],
+        
+        // News formatted for frontend
+        news: uniqueNews.slice(0, 20).map(article => ({
+          title: article.title,
+          source: article.source,
+          date: article.date,
+          url: article.link || article.url,
+          excerpt: article.excerpt || article.description,
+          region: article.region || region
+        })),
+        
+        // Articles placeholder
+        articles: [],
+        
+        // Metadata
+        timestamp: new Date().toISOString(),
+        dataSource: 'ODIN Military Intelligence',
+        odinSuccess: true,
+        
+        // Full military report for report generation
+        _militaryReport: militaryReport,
+        _frontendData: frontendData
+      };
       
-      operators: odinResult.success && odinResult.equipment ? 
-        odinResult.equipment.operators : [],
-      
-      // News formatted for frontend
-      news: uniqueNews.slice(0, 20).map(article => ({
-        title: article.title,
-        source: article.source,
-        date: article.date,
-        url: article.link || article.url,
-        excerpt: article.excerpt || article.description,
-        region: article.region || region
-      })),
-      
-      // Articles placeholder (can add CASI later)
-      articles: [],
-      
-      // Metadata
-      timestamp: new Date().toISOString(),
-      dataSource: odinResult.success ? 'ODIN' : 'Limited',
-      odinSuccess: odinResult.success
-    };
+    } else {
+      // Fallback if ODIN fails
+      result = {
+        query,
+        equipment: {
+          name: query,
+          fullName: query,
+          type: 'Military Equipment',
+          description: 'No detailed information available from ODIN',
+          specifications: {},
+          intelligence: {},
+          capabilities: {},
+          assessment: {},
+          images: [],
+          notes: '',
+          status: 'Unknown'
+        },
+        variants: [],
+        operators: [],
+        news: uniqueNews.slice(0, 20).map(article => ({
+          title: article.title,
+          source: article.source,
+          date: article.date,
+          url: article.link || article.url,
+          excerpt: article.excerpt || article.description,
+          region: article.region || region
+        })),
+        articles: [],
+        timestamp: new Date().toISOString(),
+        dataSource: 'News Only',
+        odinSuccess: false,
+        error: odinResult.error || 'ODIN search failed'
+      };
+    }
 
     // Cache the result
     cache.set(cacheKey, result);
+
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`RESPONSE SENT TO FRONTEND`);
+    console.log(`Equipment: ${result.equipment.name}`);
+    console.log(`Specifications: ${Object.keys(result.equipment.specifications || {}).length}`);
+    console.log(`News articles: ${result.news.length}`);
+    console.log(`${'='.repeat(60)}\n`);
 
     res.json(result);
 
@@ -147,30 +222,50 @@ app.post('/api/generate-report', async (req, res) => {
       return res.status(400).json({ error: 'Query is required' });
     }
 
-    // Get comprehensive data
+    console.log(`Generating report for: ${query}`);
+
+    // Get cached data first
     const cacheKey = `search_${query}_IN`;
     let data = cache.get(cacheKey);
 
     if (!data) {
+      console.log('No cached data, fetching fresh...');
       // Fetch fresh data
-      const odinResult = await searchODIN(query);
-      const news = await fetchEquipmentNews(query, 'IN', 20);
+      const odinResult = await searchODIN(query, { downloadPath: './downloads' });
+      
+      if (odinResult.success) {
+        data = {
+          query,
+          equipment: {
+            name: odinResult.frontendData.overview.name,
+            specifications: odinResult.frontendData.specificationsTab,
+            intelligence: odinResult.frontendData.intelligenceTab,
+            capabilities: odinResult.frontendData.capabilitiesTab,
+            assessment: odinResult.frontendData.assessmentTab,
+            notes: odinResult.frontendData.notesTab.intelligenceNotes
+          },
+          variants: odinResult.frontendData.intelligenceTab.variants,
+          operators: odinResult.frontendData.intelligenceTab.operators,
+          _militaryReport: odinResult.militaryReport
+        };
+      }
+    }
 
-      data = {
-        query,
-        equipment: odinResult.equipment || {},
-        news: news || [],
-        variants: odinResult.equipment?.variants || [],
-        operators: odinResult.equipment?.operators || []
-      };
+    if (!data) {
+      return res.status(404).json({ 
+        error: 'No data available for report generation',
+        query 
+      });
     }
 
     // Generate report document
-    const report = generateReportDocument(data);
+    const report = generateMilitaryReportDocument(data);
 
     res.json({
       success: true,
-      report
+      report,
+      format: 'markdown',
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
@@ -183,27 +278,33 @@ app.post('/api/generate-report', async (req, res) => {
 });
 
 /**
- * Generate formatted report document
+ * Generate formatted military intelligence report document
  */
-function generateReportDocument(data) {
+function generateMilitaryReportDocument(data) {
   const equipment = data.equipment;
+  const militaryReport = data._militaryReport;
   
-  let report = `# INTELLIGENCE REPORT: ${equipment.fullName || data.query}\n\n`;
-  report += `Generated: ${new Date().toLocaleString()}\n\n`;
+  let report = `# MILITARY INTELLIGENCE REPORT\n`;
+  report += `# ${equipment.name}\n\n`;
+  report += `**Classification:** UNCLASSIFIED\n`;
+  report += `**Generated:** ${new Date().toLocaleString()}\n`;
+  report += `**Source:** ODIN Database\n\n`;
   
-  report += `## OVERVIEW\n\n`;
-  report += `**Equipment Name:** ${equipment.fullName || data.query}\n`;
-  report += `**Type:** ${equipment.type || 'Unknown'}\n`;
-  report += `**Status:** ${equipment.status || 'Unknown'}\n\n`;
-  report += `**Description:**\n${equipment.description || 'No description available'}\n\n`;
+  report += `---\n\n`;
   
-  if (equipment.notes) {
-    report += `## DETAILED NOTES\n\n`;
-    report += `${equipment.notes}\n\n`;
+  // Executive Summary
+  if (militaryReport) {
+    report += `## EXECUTIVE SUMMARY\n\n`;
+    report += `**Equipment Name:** ${militaryReport.executiveSummary.name}\n`;
+    report += `**Classification:** ${militaryReport.executiveSummary.classification}\n`;
+    report += `**Operational Status:** ${militaryReport.executiveSummary.operationalStatus}\n`;
+    report += `**Threat Level:** ${militaryReport.executiveSummary.threatLevel}\n\n`;
   }
   
+  // Operational Intelligence
   if (data.operators && data.operators.length > 0) {
-    report += `## OPERATORS\n\n`;
+    report += `## OPERATIONAL INTELLIGENCE\n\n`;
+    report += `**Operators:**\n`;
     data.operators.forEach(op => {
       report += `- ${op}\n`;
     });
@@ -211,17 +312,9 @@ function generateReportDocument(data) {
   }
   
   if (data.variants && data.variants.length > 0) {
-    report += `## VARIANTS\n\n`;
+    report += `**Known Variants:**\n`;
     data.variants.forEach(variant => {
       report += `- ${variant}\n`;
-    });
-    report += `\n`;
-  }
-  
-  if (equipment.specifications && Object.keys(equipment.specifications).length > 0) {
-    report += `## TECHNICAL SPECIFICATIONS\n\n`;
-    Object.entries(equipment.specifications).forEach(([key, value]) => {
-      report += `**${key}:** ${value}\n`;
     });
     report += `\n`;
   }
@@ -229,39 +322,136 @@ function generateReportDocument(data) {
   if (equipment.intelligence) {
     const intel = equipment.intelligence;
     
-    if (intel.system) {
-      report += `## SYSTEM INFORMATION\n\n${intel.system}\n\n`;
+    if (intel.deploymentRegions && intel.deploymentRegions.length > 0) {
+      report += `**Deployment Regions:** ${intel.deploymentRegions.join(', ')}\n`;
     }
     
-    if (intel.dimensions) {
-      report += `## DIMENSIONS\n\n${intel.dimensions}\n\n`;
+    if (intel.operationalRange) {
+      report += `**Operational Range:** ${intel.operationalRange}\n`;
     }
     
-    if (intel.payload) {
-      report += `## PAYLOAD\n\n${intel.payload}\n\n`;
+    report += `\n`;
+  }
+  
+  // Technical Specifications
+  if (equipment.specifications && Object.keys(equipment.specifications).length > 0) {
+    report += `## TECHNICAL SPECIFICATIONS\n\n`;
+    
+    // Group specifications by category
+    const dimensions = {};
+    const performance = {};
+    const armament = {};
+    const other = {};
+    
+    Object.entries(equipment.specifications).forEach(([key, value]) => {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes('length') || lowerKey.includes('diameter') || lowerKey.includes('weight') || lowerKey.includes('span')) {
+        dimensions[key] = value;
+      } else if (lowerKey.includes('range') || lowerKey.includes('speed') || lowerKey.includes('altitude') || lowerKey.includes('mach')) {
+        performance[key] = value;
+      } else if (lowerKey.includes('warhead') || lowerKey.includes('payload') || lowerKey.includes('explosive')) {
+        armament[key] = value;
+      } else {
+        other[key] = value;
+      }
+    });
+    
+    if (Object.keys(dimensions).length > 0) {
+      report += `### Dimensions\n\n`;
+      Object.entries(dimensions).forEach(([key, value]) => {
+        report += `- **${key}:** ${value}\n`;
+      });
+      report += `\n`;
     }
     
-    if (intel.propulsion) {
-      report += `## PROPULSION CHARACTERISTICS\n\n${intel.propulsion}\n\n`;
+    if (Object.keys(performance).length > 0) {
+      report += `### Performance\n\n`;
+      Object.entries(performance).forEach(([key, value]) => {
+        report += `- **${key}:** ${value}\n`;
+      });
+      report += `\n`;
     }
     
-    if (intel.fireControl) {
-      report += `## FIRE CONTROL\n\n${intel.fireControl}\n\n`;
+    if (Object.keys(armament).length > 0) {
+      report += `### Armament\n\n`;
+      Object.entries(armament).forEach(([key, value]) => {
+        report += `- **${key}:** ${value}\n`;
+      });
+      report += `\n`;
+    }
+    
+    if (Object.keys(other).length > 0) {
+      report += `### Other Specifications\n\n`;
+      Object.entries(other).forEach(([key, value]) => {
+        report += `- **${key}:** ${value}\n`;
+      });
+      report += `\n`;
     }
   }
   
-  if (data.news && data.news.length > 0) {
-    report += `## RECENT NEWS & DEVELOPMENTS\n\n`;
-    data.news.slice(0, 10).forEach(article => {
-      report += `### ${article.title}\n`;
-      report += `**Source:** ${article.source} | **Date:** ${article.date}\n`;
-      report += `${article.excerpt || article.description || ''}\n`;
-      report += `**URL:** ${article.url || article.link}\n\n`;
-    });
+  // Combat Capabilities
+  if (equipment.capabilities) {
+    report += `## COMBAT CAPABILITIES\n\n`;
+    report += `**Primary Role:** ${equipment.capabilities.primaryRole || 'Unknown'}\n\n`;
+    
+    if (equipment.capabilities.targetTypes && equipment.capabilities.targetTypes.length > 0) {
+      report += `**Target Types:**\n`;
+      equipment.capabilities.targetTypes.forEach(target => {
+        report += `- ${target}\n`;
+      });
+      report += `\n`;
+    }
+    
+    if (equipment.capabilities.guidanceSystem) {
+      report += `**Guidance System:** ${equipment.capabilities.guidanceSystem}\n\n`;
+    }
+    
+    if (equipment.capabilities.warheadType) {
+      report += `**Warhead Type:** ${equipment.capabilities.warheadType}\n\n`;
+    }
+  }
+  
+  // Strategic Assessment
+  if (equipment.assessment) {
+    report += `## STRATEGIC ASSESSMENT\n\n`;
+    
+    if (equipment.assessment.strengths && equipment.assessment.strengths.length > 0) {
+      report += `### Strengths\n\n`;
+      equipment.assessment.strengths.forEach(strength => {
+        report += `- ${strength}\n`;
+      });
+      report += `\n`;
+    }
+    
+    if (equipment.assessment.limitations && equipment.assessment.limitations.length > 0) {
+      report += `### Limitations\n\n`;
+      equipment.assessment.limitations.forEach(limitation => {
+        report += `- ${limitation}\n`;
+      });
+      report += `\n`;
+    }
+    
+    if (equipment.assessment.counterMeasures && equipment.assessment.counterMeasures.length > 0) {
+      report += `### Recommended Countermeasures\n\n`;
+      equipment.assessment.counterMeasures.forEach(countermeasure => {
+        report += `- ${countermeasure}\n`;
+      });
+      report += `\n`;
+    }
+  }
+  
+  // Intelligence Notes
+  if (equipment.notes) {
+    report += `## INTELLIGENCE NOTES\n\n`;
+    report += `${equipment.notes}\n\n`;
   }
   
   report += `---\n\n`;
-  report += `*This report was automatically generated from multiple intelligence sources.*\n`;
+  report += `## REPORT METADATA\n\n`;
+  report += `**Generated:** ${new Date().toLocaleString()}\n`;
+  report += `**Data Source:** ODIN Military Equipment Database\n`;
+  report += `**Classification:** UNCLASSIFIED\n\n`;
+  report += `*This report was automatically generated from multiple intelligence sources including ODIN database, technical specifications, and operational assessments.*\n`;
   
   return report;
 }
@@ -304,9 +494,14 @@ app.get('/health', (req, res) => {
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Equipment Tracker API running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log('Enhanced ODIN scraping enabled');
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`EQUIPMENT TRACKER API - MILITARY INTELLIGENCE MODE`);
+  console.log(`${'='.repeat(60)}`);
+  console.log(`Server: http://localhost:${PORT}`);
+  console.log(`Health: http://localhost:${PORT}/health`);
+  console.log(`Enhanced ODIN scraping: ENABLED`);
+  console.log(`Military report generation: ENABLED`);
+  console.log(`${'='.repeat(60)}\n`);
 });
 
 module.exports = app;
