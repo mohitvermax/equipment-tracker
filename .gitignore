@@ -104,3 +104,5 @@ dump.rdb
 .scratch/
 
 reports/
+uploads/
+downloads/
