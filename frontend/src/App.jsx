@@ -9,11 +9,23 @@ const EquipmentTracker = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const [uploadedImage, setUploadedImage] = useState(null);
   const [recognizing, setRecognizing] = useState(false);
+  const [equipmentLibrary, setEquipmentLibrary] = useState([]);
+  const [showLibrary, setShowLibrary] = useState(true);
+  const [selectedCategory, setSelectedCategory] = useState('All');
   const fileInputRef = useRef(null);
+
+  // Load equipment library on mount
+  React.useEffect(() => {
+    fetch('http://localhost:3001/api/equipment-library')
+      .then(res => res.json())
+      .then(data => setEquipmentLibrary(data.equipment))
+      .catch(err => console.error('Failed to load equipment library:', err));
+  }, []);
 
   const searchEquipment = async (query) => {
     setLoading(true);
     setError(null);
+    setShowLibrary(false);
     
     try {
       const response = await fetch(`http://localhost:3001/api/search?query=${encodeURIComponent(query)}&region=IN`);
@@ -61,12 +73,17 @@ const EquipmentTracker = () => {
         setSearchQuery(data.equipment);
         
         const alternatives = data.alternativeNames?.length > 0 
-          ? ` (alternatives: ${data.alternativeNames.join(', ')})`
+          ? `\n\nAlternatives found:\n${data.alternativeNames.join(', ')}`
           : '';
         
-        alert(`Equipment identified: ${data.equipment}${alternatives}\n\nClick "Analyze" to search.`);
+        const searchInfo = data.searchResults?.length > 0
+          ? `\n\nTop search results:\n${data.searchResults.slice(0, 3).map(r => `• ${r.title}`).join('\n')}`
+          : '';
+        
+        alert(`✓ Equipment identified: ${data.equipment}${alternatives}${searchInfo}\n\nClick "Analyze" to get full intelligence report.`);
       } else {
-        alert(data.message || 'Could not identify equipment in image');
+        const suggestions = data.suggestions?.join('\n• ') || 'Try a different image';
+        alert(`⚠ ${data.message}\n\nSuggestions:\n• ${suggestions}`);
       }
     } catch (err) {
       setError('Image recognition failed: ' + err.message);
@@ -112,7 +129,7 @@ const EquipmentTracker = () => {
                 <Search className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-white">Military Equipment Intelligence</h1>
+                <h1 className="text-xl font-bold text-white">KOSH Equipment Tracker</h1>
                 <p className="text-xs text-slate-400">Defense Systems Analysis Platform</p>
               </div>
             </div>
@@ -125,10 +142,10 @@ const EquipmentTracker = () => {
         <div className="relative max-w-7xl mx-auto px-4 py-16">
           <div className="text-center mb-8">
             <h2 className="text-4xl font-bold text-white mb-4">
-              Equipment Intelligence Platform
+              KOSH Equipment Tracker
             </h2>
             <p className="text-lg text-slate-300 max-w-2xl mx-auto">
-              Search by name or upload an image. Get comprehensive intelligence from ODIN database with OCR recognition.
+              Search by name or upload an image. Get comprehensive intelligence from ODIN database using Google Image Search.
             </p>
           </div>
 
@@ -213,10 +230,10 @@ const EquipmentTracker = () => {
         <div className="max-w-7xl mx-auto px-4 py-12 text-center">
           <Loader2 className="w-12 h-12 text-blue-500 animate-spin mx-auto mb-4" />
           <p className="text-slate-300">
-            {recognizing ? 'Recognizing equipment from image...' : 'Analyzing equipment data from ODIN database...'}
+            {recognizing ? 'Searching Google for this image...' : 'Analyzing equipment data from ODIN database...'}
           </p>
           <p className="text-slate-400 text-sm mt-2">
-            {recognizing ? 'Using OCR technology' : 'This may take 10-20 seconds'}
+            {recognizing ? 'Using reverse image search' : 'This may take 10-20 seconds'}
           </p>
         </div>
       )}
@@ -226,6 +243,63 @@ const EquipmentTracker = () => {
           <div className="bg-red-900/20 border border-red-500/50 rounded-lg p-4 flex items-center gap-3">
             <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
             <p className="text-red-200">{error}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Equipment Library */}
+      {showLibrary && !loading && !searchResults && (
+        <div className="max-w-7xl mx-auto px-4 py-8">
+          <div className="mb-6">
+            <h3 className="text-2xl font-bold text-white mb-4">Equipment Library</h3>
+            <div className="flex gap-2 flex-wrap">
+              {['All', 'Aircraft', 'Missile', 'Air Defense', 'Tank', 'Artillery', 'Helicopter', 'UAV', 'Naval'].map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    selectedCategory === cat
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {equipmentLibrary
+              .filter(eq => selectedCategory === 'All' || eq.category === selectedCategory)
+              .map(equipment => (
+                <button
+                  key={equipment.id}
+                  onClick={() => {
+                    setSearchQuery(equipment.name);
+                    searchEquipment(equipment.name);
+                  }}
+                  className="bg-slate-800/50 backdrop-blur-lg border border-slate-700 rounded-xl p-4 hover:border-blue-500 hover:bg-slate-800/70 transition-all text-left group"
+                >
+                  <div className="flex items-start justify-between mb-2">
+                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                      equipment.tier === 'Tier 1' 
+                        ? 'bg-yellow-500/20 text-yellow-300' 
+                        : 'bg-blue-500/20 text-blue-300'
+                    }`}>
+                      {equipment.tier}
+                    </span>
+                    <Search className="w-4 h-4 text-slate-400 group-hover:text-blue-400 transition-colors" />
+                  </div>
+                  <h4 className="text-white font-semibold mb-1 group-hover:text-blue-300 transition-colors">
+                    {equipment.name}
+                  </h4>
+                  <p className="text-slate-400 text-sm">{equipment.type}</p>
+                  <div className="mt-2 pt-2 border-t border-slate-700">
+                    <span className="text-xs text-slate-500">{equipment.category}</span>
+                  </div>
+                </button>
+              ))}
           </div>
         </div>
       )}

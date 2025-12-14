@@ -3,8 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const NodeCache = require('node-cache');
 const multer = require('multer');
-const Tesseract = require('tesseract.js');
-const sharp = require('sharp');
+const axios = require('axios');
+const cheerio = require('cheerio');
 const path = require('path');
 const fs = require('fs');
 
@@ -55,7 +55,7 @@ app.use('/uploads', express.static('uploads'));
 app.use('/downloads', express.static('downloads'));
 
 /**
- * Image recognition endpoint
+ * Image recognition endpoint using Google Reverse Image Search
  */
 app.post('/api/recognize-image', upload.single('image'), async (req, res) => {
   try {
@@ -69,58 +69,48 @@ app.post('/api/recognize-image', upload.single('image'), async (req, res) => {
     console.log(`${'='.repeat(60)}\n`);
 
     const imagePath = req.file.path;
+    const imageUrl = `http://localhost:3001/uploads/${req.file.filename}`;
 
-    // Preprocess image for better OCR
-    const processedImagePath = imagePath.replace(path.extname(imagePath), '_processed.jpg');
-    await sharp(imagePath)
-      .resize(2000, 2000, { fit: 'inside', withoutEnlargement: true })
-      .grayscale()
-      .normalize()
-      .sharpen()
-      .toFile(processedImagePath);
+    console.log('Performing Google Reverse Image Search...');
 
-    console.log('Image preprocessed for OCR...');
-
-    // Perform OCR
-    console.log('Running OCR...');
-    const { data: { text } } = await Tesseract.recognize(processedImagePath, 'eng', {
-      logger: m => {
-        if (m.status === 'recognizing text') {
-          console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
-        }
-      }
-    });
-
-    console.log('OCR completed');
-    console.log('Extracted text:', text.substring(0, 200) + '...');
-
-    // Extract equipment names using pattern matching
-    const equipmentKeywords = extractEquipmentNames(text);
+    // Use Google Lens/Images reverse search
+    const searchResults = await reverseImageSearch(imageUrl);
     
-    console.log('Identified equipment keywords:', equipmentKeywords);
-
-    // Clean up processed image
-    if (fs.existsSync(processedImagePath)) {
-      fs.unlinkSync(processedImagePath);
+    if (searchResults.length === 0) {
+      return res.json({
+        success: false,
+        message: 'No results found from image search',
+        suggestions: ['Try a clearer image', 'Ensure equipment is visible']
+      });
     }
+
+    console.log(`Found ${searchResults.length} results from image search`);
+
+    // Extract equipment names from results
+    const equipmentKeywords = extractEquipmentFromSearchResults(searchResults);
+    
+    console.log('Identified equipment:', equipmentKeywords);
 
     if (equipmentKeywords.length === 0) {
       return res.json({
         success: false,
-        message: 'No equipment identified in image',
-        extractedText: text,
-        suggestions: ['Try uploading a clearer image', 'Ensure equipment name is visible']
+        message: 'No military equipment identified in search results',
+        searchResults: searchResults.slice(0, 5).map(r => r.title),
+        suggestions: ['Try uploading a different angle', 'Ensure image shows equipment clearly']
       });
     }
 
-    // Return the most likely equipment name
     const primaryEquipment = equipmentKeywords[0];
 
     res.json({
       success: true,
       equipment: primaryEquipment,
       alternativeNames: equipmentKeywords.slice(1, 5),
-      extractedText: text,
+      searchResults: searchResults.slice(0, 10).map(r => ({
+        title: r.title,
+        url: r.url,
+        snippet: r.snippet
+      })),
       imageUrl: `/uploads/${req.file.filename}`
     });
 
@@ -134,51 +124,143 @@ app.post('/api/recognize-image', upload.single('image'), async (req, res) => {
 });
 
 /**
- * Extract equipment names from OCR text
+ * Perform reverse image search using Google
  */
-function extractEquipmentNames(text) {
-  const equipmentNames = [];
-  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+async function reverseImageSearch(imageUrl) {
+  try {
+    // Use Google Images search with the image URL
+    const encodedImageUrl = encodeURIComponent(imageUrl);
+    const searchUrl = `https://www.google.com/searchbyimage?image_url=${encodedImageUrl}&encoded_image=&image_content=&filename=&hl=en`;
+    
+    console.log('Reverse search URL:', searchUrl);
 
-  // Common military equipment patterns
-  const patterns = [
-    /\b([A-Z][a-zA-Z]*-?\d+[A-Z]?)\b/g, // F-35, S-400, MiG-29
-    /\b(BrahMos|Javelin|Patriot|HIMARS|THAAD|Abrams|Leopard)\b/gi,
-    /\b([A-Z]{2,}[-\s]?\d+)\b/g, // HIMARS, SA-21
-  ];
+    const response = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': 'https://www.google.com/'
+      },
+      timeout: 15000
+    });
 
-  // Extract using patterns
-  patterns.forEach(pattern => {
-    const matches = text.match(pattern);
-    if (matches) {
-      matches.forEach(match => {
-        const cleaned = match.trim();
-        if (cleaned.length >= 3 && !equipmentNames.includes(cleaned)) {
-          equipmentNames.push(cleaned);
+    const $ = cheerio.load(response.data);
+    const results = [];
+
+    // Extract search results
+    $('.g, .Gx5Zad').each((i, elem) => {
+      const $elem = $(elem);
+      const title = $elem.find('h3, .DKV0Md').text().trim();
+      const url = $elem.find('a').attr('href');
+      const snippet = $elem.find('.VwiC3b, .yXK7lf').text().trim();
+
+      if (title && title.length > 0) {
+        results.push({ title, url, snippet });
+      }
+    });
+
+    // If regular search didn't work, try extracting from other elements
+    if (results.length === 0) {
+      $('div[data-hveid] h3, div[jsname] h3').each((i, elem) => {
+        const title = $(elem).text().trim();
+        if (title) {
+          results.push({ 
+            title, 
+            url: '', 
+            snippet: '' 
+          });
         }
       });
     }
-  });
 
-  // Check for known equipment in lines
+    // Also check for "best guess" or similar results
+    const bestGuess = $('.fKDtNb, [data-attrid="title"]').first().text().trim();
+    if (bestGuess && bestGuess.length > 3) {
+      results.unshift({
+        title: bestGuess,
+        url: '',
+        snippet: 'Best guess from image search'
+      });
+    }
+
+    console.log(`Extracted ${results.length} results`);
+    
+    return results;
+
+  } catch (error) {
+    console.error('Reverse image search error:', error.message);
+    
+    // Fallback: Try using the image filename as a hint
+    return [{
+      title: 'Search failed - please try text search',
+      url: '',
+      snippet: ''
+    }];
+  }
+}
+
+/**
+ * Extract equipment names from search results
+ */
+function extractEquipmentFromSearchResults(searchResults) {
+  const equipmentNames = new Set();
+
+  // Known military equipment list
   const knownEquipment = [
-    'BrahMos', 'F-35', 'F-16', 'F-22', 'S-400', 'S-300', 'Patriot', 'THAAD',
+    'BrahMos', 'F-35', 'F-16', 'F-22', 'F-18', 'S-400', 'S-300', 'Patriot', 'THAAD',
     'HIMARS', 'Javelin', 'Stinger', 'Tomahawk', 'Harpoon', 'Abrams', 'Leopard',
-    'Challenger', 'T-90', 'T-72', 'Apache', 'Black Hawk', 'Rafale', 'Eurofighter',
-    'Su-57', 'Su-35', 'MiG-29', 'J-20', 'Akash', 'Prithvi', 'Agni'
+    'Challenger', 'T-90', 'T-72', 'T-14', 'Apache', 'Black Hawk', 'Chinook',
+    'Rafale', 'Eurofighter', 'Typhoon', 'Su-57', 'Su-35', 'Su-30', 'MiG-29', 
+    'MiG-31', 'J-20', 'J-10', 'Akash', 'Prithvi', 'Agni', 'Tejas', 'Arjun',
+    'M1 Abrams', 'M2 Bradley', 'NASAMS', 'Iron Dome', 'Arrow', 'David\'s Sling'
   ];
 
-  lines.forEach(line => {
+  // Equipment designation patterns
+  const patterns = [
+    /\b([A-Z]-?\d{1,3}[A-Z]?)\b/g,  // F-35, S-400, MiG-29
+    /\b([A-Z]{2,}-?\d+)\b/g,         // HIMARS, SA-21
+    /\b(M\d{1,3}[A-Z]?\d?)\b/g,      // M1A2, M142
+  ];
+
+  searchResults.forEach(result => {
+    const text = `${result.title} ${result.snippet}`.toLowerCase();
+
+    // Check for known equipment
     knownEquipment.forEach(equipment => {
-      if (line.toLowerCase().includes(equipment.toLowerCase())) {
-        if (!equipmentNames.includes(equipment)) {
-          equipmentNames.unshift(equipment);
-        }
+      const lowerEquip = equipment.toLowerCase();
+      if (text.includes(lowerEquip)) {
+        equipmentNames.add(equipment);
+      }
+    });
+
+    // Check for patterns in original case
+    const originalText = `${result.title} ${result.snippet}`;
+    patterns.forEach(pattern => {
+      const matches = originalText.match(pattern);
+      if (matches) {
+        matches.forEach(match => {
+          const cleaned = match.trim();
+          if (cleaned.length >= 3 && cleaned.length <= 15) {
+            // Verify it looks like military equipment
+            if (/^[A-Z]/.test(cleaned)) {
+              equipmentNames.add(cleaned);
+            }
+          }
+        });
       }
     });
   });
 
-  return equipmentNames;
+  // Prioritize known equipment
+  const result = [];
+  const knownFound = Array.from(equipmentNames).filter(name => 
+    knownEquipment.includes(name)
+  );
+  const otherFound = Array.from(equipmentNames).filter(name => 
+    !knownEquipment.includes(name)
+  );
+
+  return [...knownFound, ...otherFound];
 }
 
 /**
@@ -627,16 +709,83 @@ function generateEnhancedReport(data) {
   return report;
 }
 
-app.get('/api/trending', async (req, res) => {
-  try {
-    const trending = [
-      'BrahMos', 'F-35', 'S-400', 'HIMARS', 'Javelin',
-      'Patriot', 'Leopard 2', 'Abrams', 'Rafale', 'Su-57'
-    ];
-    res.json({ trending });
-  } catch (error) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+/**
+ * Get equipment library/catalog
+ */
+app.get('/api/equipment-library', (req, res) => {
+  const equipmentLibrary = [
+    // Fighter Jets
+    { id: 1, name: 'F-35 Lightning II', type: 'Stealth Fighter', category: 'Aircraft', tier: 'Tier 1', image: 'https://images.unsplash.com/photo-1583157480029-3c644fa2de12' },
+    { id: 2, name: 'F-22 Raptor', type: 'Air Superiority Fighter', category: 'Aircraft', tier: 'Tier 1' },
+    { id: 3, name: 'Su-57 Felon', type: 'Stealth Fighter', category: 'Aircraft', tier: 'Tier 1' },
+    { id: 4, name: 'J-20', type: 'Stealth Fighter', category: 'Aircraft', tier: 'Tier 1' },
+    { id: 5, name: 'Rafale', type: 'Multirole Fighter', category: 'Aircraft', tier: 'Tier 1' },
+    { id: 6, name: 'Eurofighter Typhoon', type: 'Multirole Fighter', category: 'Aircraft', tier: 'Tier 1' },
+    { id: 7, name: 'F-16 Fighting Falcon', type: 'Multirole Fighter', category: 'Aircraft', tier: 'Tier 2' },
+    { id: 8, name: 'F-15 Eagle', type: 'Air Superiority Fighter', category: 'Aircraft', tier: 'Tier 1' },
+    { id: 9, name: 'MiG-29', type: 'Multirole Fighter', category: 'Aircraft', tier: 'Tier 2' },
+    { id: 10, name: 'Su-35', type: 'Air Superiority Fighter', category: 'Aircraft', tier: 'Tier 1' },
+    
+    // Missiles
+    { id: 11, name: 'BrahMos', type: 'Cruise Missile', category: 'Missile', tier: 'Tier 1' },
+    { id: 12, name: 'Tomahawk', type: 'Cruise Missile', category: 'Missile', tier: 'Tier 1' },
+    { id: 13, name: 'Javelin', type: 'Anti-Tank Missile', category: 'Missile', tier: 'Tier 2' },
+    { id: 14, name: 'Stinger', type: 'MANPADS', category: 'Missile', tier: 'Tier 2' },
+    { id: 15, name: 'Harpoon', type: 'Anti-Ship Missile', category: 'Missile', tier: 'Tier 2' },
+    { id: 16, name: 'AGM-158 JASSM', type: 'Cruise Missile', category: 'Missile', tier: 'Tier 1' },
+    
+    // Air Defense
+    { id: 17, name: 'S-400 Triumf', type: 'Air Defense System', category: 'Air Defense', tier: 'Tier 1' },
+    { id: 18, name: 'Patriot', type: 'Air Defense System', category: 'Air Defense', tier: 'Tier 1' },
+    { id: 19, name: 'THAAD', type: 'Missile Defense', category: 'Air Defense', tier: 'Tier 1' },
+    { id: 20, name: 'Iron Dome', type: 'Air Defense System', category: 'Air Defense', tier: 'Tier 1' },
+    { id: 21, name: 'S-300', type: 'Air Defense System', category: 'Air Defense', tier: 'Tier 1' },
+    { id: 22, name: 'Akash', type: 'Air Defense System', category: 'Air Defense', tier: 'Tier 2' },
+    
+    // Tanks
+    { id: 23, name: 'M1 Abrams', type: 'Main Battle Tank', category: 'Tank', tier: 'Tier 1' },
+    { id: 24, name: 'Leopard 2', type: 'Main Battle Tank', category: 'Tank', tier: 'Tier 1' },
+    { id: 25, name: 'T-90', type: 'Main Battle Tank', category: 'Tank', tier: 'Tier 2' },
+    { id: 26, name: 'T-14 Armata', type: 'Main Battle Tank', category: 'Tank', tier: 'Tier 1' },
+    { id: 27, name: 'Challenger 2', type: 'Main Battle Tank', category: 'Tank', tier: 'Tier 1' },
+    { id: 28, name: 'K2 Black Panther', type: 'Main Battle Tank', category: 'Tank', tier: 'Tier 1' },
+    
+    // Artillery
+    { id: 29, name: 'HIMARS', type: 'Rocket Artillery', category: 'Artillery', tier: 'Tier 1' },
+    { id: 30, name: 'M777 Howitzer', type: 'Artillery', category: 'Artillery', tier: 'Tier 2' },
+    { id: 31, name: 'PzH 2000', type: 'Self-Propelled Howitzer', category: 'Artillery', tier: 'Tier 1' },
+    { id: 32, name: 'Dhanush', type: 'Artillery Gun', category: 'Artillery', tier: 'Tier 2' },
+    
+    // Helicopters
+    { id: 33, name: 'AH-64 Apache', type: 'Attack Helicopter', category: 'Helicopter', tier: 'Tier 1' },
+    { id: 34, name: 'UH-60 Black Hawk', type: 'Utility Helicopter', category: 'Helicopter', tier: 'Tier 2' },
+    { id: 35, name: 'Mi-24 Hind', type: 'Attack Helicopter', category: 'Helicopter', tier: 'Tier 2' },
+    { id: 36, name: 'Ka-52 Alligator', type: 'Attack Helicopter', category: 'Helicopter', tier: 'Tier 1' },
+    { id: 37, name: 'CH-47 Chinook', type: 'Transport Helicopter', category: 'Helicopter', tier: 'Tier 2' },
+    
+    // Drones/UAVs
+    { id: 38, name: 'MQ-9 Reaper', type: 'Combat UAV', category: 'UAV', tier: 'Tier 1' },
+    { id: 39, name: 'Bayraktar TB2', type: 'Combat UAV', category: 'UAV', tier: 'Tier 2' },
+    { id: 40, name: 'RQ-4 Global Hawk', type: 'Surveillance UAV', category: 'UAV', tier: 'Tier 1' },
+    { id: 41, name: 'CH-4 Rainbow', type: 'Combat UAV', category: 'UAV', tier: 'Tier 2' },
+    
+    // Bombers
+    { id: 42, name: 'B-2 Spirit', type: 'Stealth Bomber', category: 'Aircraft', tier: 'Tier 1' },
+    { id: 43, name: 'B-52 Stratofortress', type: 'Strategic Bomber', category: 'Aircraft', tier: 'Tier 1' },
+    { id: 44, name: 'Tu-160', type: 'Strategic Bomber', category: 'Aircraft', tier: 'Tier 1' },
+    
+    // Naval
+    { id: 45, name: 'Arleigh Burke Destroyer', type: 'Destroyer', category: 'Naval', tier: 'Tier 1' },
+    { id: 46, name: 'Type 055 Destroyer', type: 'Destroyer', category: 'Naval', tier: 'Tier 1' },
+    { id: 47, name: 'Kolkata Class', type: 'Destroyer', category: 'Naval', tier: 'Tier 2' },
+    
+    // More Equipment
+    { id: 48, name: 'Tejas', type: 'Light Combat Aircraft', category: 'Aircraft', tier: 'Tier 2' },
+    { id: 49, name: 'Prithvi Missile', type: 'Tactical Ballistic Missile', category: 'Missile', tier: 'Tier 2' },
+    { id: 50, name: 'Agni-V', type: 'ICBM', category: 'Missile', tier: 'Tier 1' }
+  ];
+  
+  res.json({ equipment: equipmentLibrary });
 });
 
 app.get('/health', (req, res) => {

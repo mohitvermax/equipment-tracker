@@ -378,7 +378,7 @@ async function searchODINWithModal(query, downloadPath = './downloads') {
     const searchUrl = `https://odin.tradoc.army.mil/Search/WEG/${encodeURIComponent(query)}`;
     console.log('Navigating to:', searchUrl);
 
-    await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+    await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise(res => setTimeout(res, 2000));
 
     await closeDisclaimerModal(page);
